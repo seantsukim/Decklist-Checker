@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="src/DecklistChecker/DecklistChecker.csproj" />
-  <Project Path="tests/DecklistChecker.Tests/DecklistChecker.Tests.csproj" />
-</Solution>
