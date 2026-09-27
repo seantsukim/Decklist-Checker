@@ -1,0 +1,16 @@
+// Sample decklist
+4 Lightning Bolt
+4 Lava Spike
+4 Rift Bolt
+4 Chain Lightning
+4 Goblin Guide
+4 Monastery Swiftspear
+4 Eidolon of the Great Revel
+4 Skewer the Critics
+4 Searing Blaze
+4 Light Up the Stage
+20 Mountain
+
+Sideboard
+4 Smash to Smithereens
+3 Path of Peril
