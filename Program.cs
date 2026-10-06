@@ -1,7 +1,3 @@
-using System;
-using System.Data;
-using System.IO;
-
 namespace DecklistChecker;
 
 public class Program
@@ -12,15 +8,22 @@ public class Program
     //string that will save the input within runtime
     public static string CommanderName = "";
     //Contains all the text files within the Directory
-    public static string[] DecklistFiles = Directory.GetFiles(DecklistsDirectory);
+    public static string[] DecklistFiles = [];
     private static void Main(string[] args)
     {
         Console.WriteLine("Enter Commander Name: ");
-        CommanderName = Console.ReadLine();
-        Console.WriteLine("Commander Searched: " + CommanderName); 
+        CommanderName = Console.ReadLine() ?? "";
+        Console.WriteLine("Commander Searched: " + CommanderName);
         DecklistsDirectory = Path.Combine(DecklistsDirectory, CommanderName);
-        Console.WriteLine(DecklistsDirectory.ToString());
-        Console.WriteLine(DecklistFiles);
+        Console.WriteLine(DecklistsDirectory);
+
+        if (!Directory.Exists(DecklistsDirectory))
+        {
+            Console.WriteLine("No decklists found for " + CommanderName);
+            return;
+        }
+
+        DecklistFiles = Directory.GetFiles(DecklistsDirectory, "*.txt", SearchOption.AllDirectories);
 
         foreach (string Decklist in DecklistFiles)
         {
