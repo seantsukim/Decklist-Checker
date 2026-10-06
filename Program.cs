@@ -18,12 +18,12 @@ public record CardInfo(string Name, string? ImageUrl);
 
 public class Program
 {
-    public static string BaseDirectory = AppContext.BaseDirectory;
+    public static readonly string BaseDirectory = AppContext.BaseDirectory;
     // The build output lives in bin/<Configuration>/<TargetFramework>/, so the Decklists folder is three levels up.
     //NOTE: this only works when running from the build output (dotnet run / Visual Studio debug).
     //if the app is ever published or run from another folder, this path will be wrong and the Decklists
     //folder should be copied to the output (CopyToOutputDirectory in the .csproj) or passed in as an argument instead
-    public static string DecklistsDirectory = Path.GetFullPath(Path.Combine(BaseDirectory, "..", "..", "..", "Decklists"));
+    public static readonly string DecklistsDirectory = Path.GetFullPath(Path.Combine(BaseDirectory, "..", "..", "..", "Decklists"));
 
     private static void Main(string[] args)
     {
@@ -40,11 +40,15 @@ public class Program
 
     //turns a commander name into a standard form so capitalization, word order and separators don't matter
     //e.g. "Tymna Kraum", "kraum/tymna" and "Kraum + Tymna" all become "kraum tymna"
+    //ToLowerInvariant gives the same result on every computer (plain ToLower depends on the computer's language settings)
     public static string NormalizeName(string Name) =>
-        string.Join(" ", Name.ToLower()
-                             .Split(new[] { ' ', '/', '+', '&', ',' }, StringSplitOptions.RemoveEmptyEntries)
+        string.Join(" ", Name.ToLowerInvariant()
+                             .Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries)
                              .Where(Word => Word != "and")
                              .Order());
+
+    //characters that can separate commander names in a search or folder name
+    private static readonly char[] NameSeparators = [' ', '/', '+', '&', ','];
 
     //every folder inside Decklists is one commander (or partner pair), so this is the list of homepage thumbnails
     public static string[] GetCommanderFolders() =>
@@ -147,7 +151,7 @@ public class Program
         //and on a tie the one whose name matches the folder name wins (e.g. "Sisay, Weatherlight Captain" in the Sisay folder)
         string[] FolderWords = NormalizeName(Path.GetFileName(CommanderFolder)).Split(' ');
         string[] TopCommanders = CommanderCounts.OrderByDescending(Pair => Pair.Value)
-                                             .ThenByDescending(Pair => FolderWords.Count(Word => Pair.Key.ToLower().Contains(Word)))
+                                             .ThenByDescending(Pair => FolderWords.Count(Word => Pair.Key.Contains(Word, StringComparison.OrdinalIgnoreCase)))
                                              .Select(Pair => Pair.Key.Split('|', StringSplitOptions.RemoveEmptyEntries))
                                              .FirstOrDefault() ?? [];
 
@@ -242,6 +246,9 @@ public class Program
         return new CardInfo(Json.RootElement.GetProperty("name").GetString() ?? Name, GetImageUrl(Json.RootElement));
     }
 
+    //the Scryfall fields that hold a name a card can be listed under
+    private static readonly string[] NameFields = ["name", "printed_name", "flavor_name"];
+
     //every name a card can be listed under in a decklist: its main name, each face of a double-faced or split card
     //(Scryfall writes these as "Front // Back" but a decklist may only list the front), and alternate-name printings
     private static IEnumerable<string> GetNames(JsonElement Card)
@@ -250,7 +257,7 @@ public class Program
         if (Card.TryGetProperty("card_faces", out JsonElement Faces))
             Parts.AddRange(Faces.EnumerateArray());
         foreach (JsonElement Part in Parts)
-            foreach (string Field in new[] { "name", "printed_name", "flavor_name" })
+            foreach (string Field in NameFields)
                 if (Part.TryGetProperty(Field, out JsonElement Value) && Value.GetString() is string Text)
                     yield return Text;
     }
