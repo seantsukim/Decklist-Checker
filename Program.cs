@@ -79,7 +79,11 @@ public class Program
         DataDict = DataDict.OrderByDescending(DataPair => DataPair.Value)
                            .ThenBy(DataPair => DataPair.Key)
                            .ToDictionary(DataPair => DataPair.Key, DataPair => DataPair.Value);
+        
+        //Gets the number of .txt files in the directory to use in relation to frequency percentages
+        int txtFileCount = Directory.GetFiles(DecklistsDirectory, "*.txt", SearchOption.TopDirectoryOnly).Length;
+
         foreach (KeyValuePair<string, int> DataPair in DataDict)
-            Console.WriteLine($"CardName: {DataPair.Key}, Shows Up: {DataPair.Value}");
+            Console.WriteLine($"CardName: {DataPair.Key, -30}, Shows Up: {(((float)(DataPair.Value)/txtFileCount)*100):F2}% Times");
     }
 }
