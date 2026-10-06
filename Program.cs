@@ -21,16 +21,27 @@ public class Program
         //ReadLine returns null when there is no more input (e.g. Ctrl+Z / Ctrl+D), so fall back to an empty name
         CommanderName = Console.ReadLine() ?? "";
         Console.WriteLine("Commander Searched: " + CommanderName);
-        //NOTE: the commander name has to match the folder name inside Decklists (e.g. "Kefka").
-        //on Linux/macOS this match is case sensitive, so "kefka" would not find the "Kefka" folder
-        DecklistsDirectory = Path.Combine(DecklistsDirectory, CommanderName);
+
+        //turns a commander name into a standard form so capitalization, word order and separators don't matter
+        //e.g. "Tymna Kraum", "kraum/tymna" and "Kraum + Tymna" all become "kraum tymna"
+        static string NormalizeName(string Name) =>
+            string.Join(" ", Name.ToLower()
+                                 .Split(new[] { ' ', '/', '+', '&', ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                 .Where(Word => Word != "and")
+                                 .Order());
+
+        //find the folder inside Decklists whose name matches the search once both are in the standard form
+        //NOTE: folders should be named with the commanders' short names (e.g. "Kefka", "Tymna Kraum"), in any order
+        string? CommanderFolder = Directory.GetDirectories(DecklistsDirectory)
+            .FirstOrDefault(Folder => NormalizeName(Path.GetFileName(Folder)) == NormalizeName(CommanderName));
 
         //failcase handled if directory doesn't exist
-        if (!Directory.Exists(DecklistsDirectory))
+        if (CommanderFolder == null)
         {
             Console.WriteLine("No decklists found for " + CommanderName);
             return;
         }
+        DecklistsDirectory = CommanderFolder;
 
         //grabs all .txt files in the appropriate directory
         //SearchOption.AllDirectories also picks up .txt files in any subfolders, so decklists can be grouped further later on
@@ -42,19 +53,20 @@ public class Program
             Console.WriteLine(Decklist);
             //read the file once so the line count and the contents come from the same read
             //the decklist files are small (~100-140 lines), so loading the whole file into memory is fine
-            string[] Lines = File.ReadAllLines(Decklist);
+            //blank lines at the start/end are trimmed off and every line is trimmed so blank lines are exactly ""
+            string[] Lines = File.ReadAllText(Decklist).Trim().Split('\n').Select(Line => Line.Trim()).ToArray();
             Console.WriteLine(Lines.Length);
-            //we want to get the contents for the first 99 cards in these text files, plus the very last line
-            //the textfiles downloaded from topdeck.gg is in this assumed format
-            //NOTE: expected layout is lines 1-99 = main deck, then a blank line, then optional sections
-            //(SIDEBOARD:, STICKERS:, ATTRACTIONS:), then the commander on the very last line.
-            //this assumes a single commander with 99 one-of cards; partner commanders or a deck with
-            //multiples of a card (e.g. "10 Island") will take up a different number of lines and need a
-            //different approach, such as reading until the first blank line instead of counting to 99
+            //the textfiles downloaded from topdeck.gg are split into blocks by blank lines:
+            //first block = main deck, middle blocks = optional sections (SIDEBOARD:, STICKERS:, ATTRACTIONS:),
+            //last block = the commander(s), 1 line for a single commander or 2 lines for partners (e.g. Tymna + Kraum)
+            //so instead of counting to 99, we keep everything before the first blank line and after the last one
+            int FirstBlank = Array.IndexOf(Lines, "");
+            int LastBlank = Array.LastIndexOf(Lines, "");
             for (int Counter = 1; Counter <= Lines.Length; Counter++)
             {
-                //catalog data for the first 99 and the last card (commander)
-                if ((Counter <= 99) || (Counter == Lines.Length))
+                //catalog data for the main deck (before the first blank line) and the commander(s) (after the last one)
+                //if a file has no blank lines at all, both indexes are -1 and every line is counted
+                if ((Counter <= FirstBlank) || (Counter > LastBlank + 1))
                 {
                     string Content = Lines[Counter - 1].Trim();
                     //skip blank lines so they don't end up in the dictionary
@@ -81,7 +93,8 @@ public class Program
                            .ToDictionary(DataPair => DataPair.Key, DataPair => DataPair.Value);
         
         //Gets the number of .txt files in the directory to use in relation to frequency percentages
-        int txtFileCount = Directory.GetFiles(DecklistsDirectory, "*.txt", SearchOption.TopDirectoryOnly).Length;
+        //uses the same list of files that was read above (which includes subfolders) so the percentages line up
+        int txtFileCount = DecklistFiles.Length;
 
         foreach (KeyValuePair<string, int> DataPair in DataDict)
             Console.WriteLine($"CardName: {DataPair.Key, -30}, Shows Up: {(((float)(DataPair.Value)/txtFileCount)*100):F2}% Times");
