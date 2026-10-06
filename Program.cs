@@ -10,7 +10,7 @@ public class Program
     //Contains all the text files within the Directory
     public static string[] DecklistFiles = [];
     //holds all the data and how often it appears in the txt files data
-    public static Dictionary<string, int> DataDict = new Dictionary<string, int>();
+    public static Dictionary<string, int> DataDict = new();
     private static void Main(string[] args)
     {
         Console.WriteLine("Enter Commander Name: ");
@@ -32,37 +32,33 @@ public class Program
         foreach (string Decklist in DecklistFiles)
         {
             Console.WriteLine(Decklist);
-            int FileLineCount = File.ReadLines(Decklist).Count();
-            Console.WriteLine(FileLineCount);
+            //read the file once so the line count and the contents come from the same read
+            string[] Lines = File.ReadAllLines(Decklist);
+            Console.WriteLine(Lines.Length);
             //we want to get the contents for the first 99 cards in these text files, plus the very last line
             //the textfiles downloaded from topdeck.gg is in this assumed format
-            using (StreamReader Reader = new StreamReader(Decklist))
+            for (int Counter = 1; Counter <= Lines.Length; Counter++)
             {
-                string Content;
-                int Counter = 1;
-                while ((Content = Reader.ReadLine()) != null)
+                //catalog data for the first 99 and the last card (commander)
+                if ((Counter <= 99) || (Counter == Lines.Length))
                 {
-                    //catalog data for the first 99 and the last card (commander)
-                    if ((Counter <= 99) || (Counter == FileLineCount))
-                    {
-                        //index 2 and beyond as we ignore the number in front and the space
-                        if (Content.Length >2)
-                            Content = Content[2..];
-                        //update entry if it is in the dicitonary
-                        if (DataDict.ContainsKey(Content))
-                        {
-                            DataDict[Content] += 1;
-                        }
-                        //make new entry in dictionary if the key isn't found
-                        else
-                        {
-                            DataDict[Content] = 1;
-                        }
-                    }
-                    Counter++;
+                    string Content = Lines[Counter - 1].Trim();
+                    //skip blank lines so they don't end up in the dictionary
+                    if (Content.Length == 0)
+                        continue;
+                    //drop the quantity in front (everything up to the first space) so only the card name is left
+                    int SpaceIndex = Content.IndexOf(' ');
+                    if (SpaceIndex >= 0)
+                        Content = Content[(SpaceIndex + 1)..];
+                    //update entry if it is in the dictionary, or make a new entry starting at 1 if it isn't
+                    DataDict[Content] = DataDict.GetValueOrDefault(Content) + 1;
                 }
             }
         }
+        //sort the pairs by how often the card shows up (most common first), then by card name for ties
+        DataDict = DataDict.OrderByDescending(DataPair => DataPair.Value)
+                           .ThenBy(DataPair => DataPair.Key)
+                           .ToDictionary(DataPair => DataPair.Key, DataPair => DataPair.Value);
         foreach (KeyValuePair<string, int> DataPair in DataDict)
             Console.WriteLine($"CardName: {DataPair.Key}, Shows Up: {DataPair.Value}");
     }
