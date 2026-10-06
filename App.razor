@@ -92,7 +92,32 @@
             text-align: center;
             overflow: hidden;
         }
-        .percent { font-size: 0.875rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .percent {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+        /* letter rank badge next to the percentage */
+        .rank {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 1.5em;
+            padding: 1px 4px;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+        .rank-s { background: #c9961a; }
+        .rank-a { background: #2f9e44; }
+        .rank-b { background: #1c7ed6; }
+        .rank-c { background: #7048e8; }
+        .rank-d { background: #e8590c; }
+        .rank-f { background: #868e96; }
     </style>
 </head>
 <body>
