@@ -1,0 +1,105 @@
+@* the page shell every page is rendered inside: <head>, styles, and the router that picks the page from the URL *@
+@using Microsoft.AspNetCore.Components.Routing
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <title>Decklist Checker</title>
+    <style>
+        :root {
+            --bg: #f6f5f2;
+            --surface: #ffffff;
+            --text: #1d1d1f;
+            --muted: #6b6b70;
+            --border: #e2e0db;
+            --accent: #7a4fd6;
+        }
+        @@media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #141416;
+                --surface: #1e1e22;
+                --text: #ececef;
+                --muted: #9a9aa2;
+                --border: #2e2e34;
+                --accent: #a688ee;
+            }
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 24px 16px 48px;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        main { max-width: 1400px; margin: 0 auto; }
+        h1 { margin: 0 0 4px; font-size: 1.75rem; }
+        .subtitle { margin: 0 0 24px; color: var(--muted); }
+        a { color: var(--accent); }
+        .back { display: inline-block; margin-bottom: 16px; text-decoration: none; }
+
+        /* homepage: one thumbnail per folder in Decklists */
+        .commanders {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 16px;
+        }
+        .thumbnail {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text);
+            text-decoration: none;
+            transition: transform 0.15s, border-color 0.15s;
+        }
+        .thumbnail:hover { transform: translateY(-3px); border-color: var(--accent); }
+        /* every thumbnail is the same height and shows the top of each commander card (name + art),
+           so single commanders and partner pairs line up */
+        .thumbnail-cards { display: flex; gap: 6px; height: 180px; }
+        .thumbnail-cards > * { flex: 1; min-width: 0; height: 100%; aspect-ratio: auto; border-radius: 8px; }
+        .thumbnail-cards .card-image { object-position: top; }
+        .thumbnail-name { font-weight: 600; }
+        .thumbnail-count { color: var(--muted); font-size: 0.875rem; }
+
+        /* commander page: 10 cards per row with the percentage underneath */
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(10, minmax(0, 1fr));
+            gap: 12px 8px;
+        }
+        .card { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .card-image, .card-missing {
+            width: 100%;
+            aspect-ratio: 488 / 680;
+            border-radius: 4.75% / 3.5%;
+        }
+        .card-image { display: block; object-fit: cover; }
+        .card-missing {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 6px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            font-size: 0.75rem;
+            text-align: center;
+            overflow: hidden;
+        }
+        .percent { font-size: 0.875rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+<body>
+    <Router AppAssembly="typeof(Program).Assembly">
+        <Found Context="RouteData">
+            <RouteView RouteData="RouteData" />
+        </Found>
+    </Router>
+</body>
+</html>
