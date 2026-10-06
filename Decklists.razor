@@ -1,0 +1,100 @@
+@* one page for both views:
+   "/"                 = homepage, one thumbnail per commander folder in Decklists
+   "/commander/{Name}" = every card from that commander's decklists, using the dictionary built in Program.ReadDecklists *@
+@page "/"
+@page "/commander/{Name}"
+
+<main>
+    @if (Name == null)
+    {
+        <h1>Decklist Checker</h1>
+        <p class="subtitle">Pick a commander to see how often each card shows up in its decklists.</p>
+
+        <div class="commanders">
+            @foreach (CommanderThumbnail Thumbnail in Thumbnails)
+            {
+                <a class="thumbnail" href="commander/@Uri.EscapeDataString(Thumbnail.Folder)">
+                    <div class="thumbnail-cards">
+                        @foreach (string Commander in Thumbnail.Commanders)
+                        {
+                            @CardPicture(Commander)
+                        }
+                    </div>
+                    <span class="thumbnail-name">@Thumbnail.Folder</span>
+                    <span class="thumbnail-count">@Thumbnail.FileCount decklists</span>
+                </a>
+            }
+        </div>
+    }
+    else if (Result == null)
+    {
+        <a class="back" href="">&larr; All commanders</a>
+        <h1>No decklists found for @Name</h1>
+    }
+    else
+    {
+        <a class="back" href="">&larr; All commanders</a>
+        <h1>@FolderName</h1>
+        <p class="subtitle">@Result.DataDict.Count different cards across @Result.FileCount decklists</p>
+
+        <div class="cards">
+            @foreach (KeyValuePair<string, int> DataPair in Result.DataDict)
+            {
+                <div class="card">
+                    @CardPicture(DataPair.Key)
+                    @* same percentage as the terminal version: decklists the card shows up in / total decklists *@
+                    <span class="percent">@((((float)DataPair.Value / Result.FileCount) * 100).ToString("F2"))%</span>
+                </div>
+            }
+        </div>
+    }
+</main>
+
+@code {
+    //the folder name from the URL, or null on the homepage
+    [Parameter] public string? Name { get; set; }
+
+    private record CommanderThumbnail(string Folder, string[] Commanders, int FileCount);
+
+    private List<CommanderThumbnail> Thumbnails = new();
+    private DecklistResult? Result;
+    private string FolderName = "";
+    //card name -> Scryfall image link
+    private Dictionary<string, string> CardImages = new();
+
+    //runs on the server before the page is sent, so all the data (and Scryfall images) are ready when it renders
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Name == null)
+        {
+            //one thumbnail per folder in Decklists, showing that folder's most common commander(s)
+            Thumbnails = Program.GetCommanderFolders()
+                .Select(Folder => (Folder, Decks: Program.ReadDecklists(Path.Combine(Program.DecklistsDirectory, Folder))))
+                .Select(Entry => new CommanderThumbnail(Entry.Folder, Entry.Decks.Commanders, Entry.Decks.FileCount))
+                .ToList();
+            CardImages = await Program.GetCardImages(Thumbnails.SelectMany(Thumbnail => Thumbnail.Commanders));
+        }
+        else
+        {
+            //the same order-independent search as before, so "/commander/tymna kraum" also finds "Kraum Tymna"
+            string? CommanderFolder = Program.FindCommanderFolder(Name);
+            Result = CommanderFolder == null ? null : Program.ReadDecklists(CommanderFolder);
+            FolderName = Path.GetFileName(CommanderFolder) ?? Name;
+            if (Result != null)
+                CardImages = await Program.GetCardImages(Result.DataDict.Keys);
+        }
+    }
+
+    //shows the Scryfall image for a card, or its name in a card-shaped box if no image was found
+    private RenderFragment CardPicture(string CardName) =>
+        @<text>
+            @if (CardImages.TryGetValue(CardName, out string? ImageUrl))
+            {
+                <img class="card-image" src="@ImageUrl" alt="@CardName" title="@CardName" loading="lazy" />
+            }
+            else
+            {
+                <div class="card-missing" title="@CardName">@CardName</div>
+            }
+        </text>;
+}
