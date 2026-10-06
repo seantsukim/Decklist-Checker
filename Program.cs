@@ -8,7 +8,13 @@ namespace DecklistChecker;
 //DataDict = card name -> number of decklists the card shows up in (sorted most common first)
 //FileCount = number of decklists read, used for the percentages
 //Commanders = the commander(s) used by the most decklists in the folder, used for the homepage thumbnail
-public record DecklistResult(Dictionary<string, int> DataDict, int FileCount, string[] Commanders);
+//CardImages = card name -> Scryfall image link (cards without an image are left out)
+public record DecklistResult(Dictionary<string, int> DataDict, int FileCount, string[] Commanders, Dictionary<string, string> CardImages);
+
+//what Scryfall knows about one card
+//Name = Scryfall's main name for the card. every printing with the same Scryfall card id (oracle_id) has the same main name,
+//so alternate-name printings (e.g. "Shantotto's Coercion") come back as the original card (e.g. "Diabolic Intent")
+public record CardInfo(string Name, string? ImageUrl);
 
 public class Program
 {
@@ -53,13 +59,17 @@ public class Program
     //reads every decklist in a commander folder and builds the dictionary of how often each card shows up
     //NOTE: everything is created fresh on each call (nothing is stored in static fields), because on a website
     //several people can load pages at the same time and their counts must not add onto each other
-    public static DecklistResult ReadDecklists(string CommanderFolder)
+    public static async Task<DecklistResult> ReadDecklists(string CommanderFolder)
     {
         //holds all the data and how often it appears in the txt files data
         //key = card name, value = number of decklists the card shows up in
         Dictionary<string, int> DataDict = new();
         //counts how many decklists use each commander (or partner pair) so the thumbnail can show the most common one
         Dictionary<string, int> CommanderCounts = new();
+        //the card names read from each decklist, and which of them are the commander(s)
+        //cards are only counted after every name has been looked up on Scryfall, so alternate names can be merged first
+        List<List<string>> FileCards = new();
+        List<List<string>> FileCommanders = new();
 
         //grabs all .txt files in the appropriate directory
         //SearchOption.AllDirectories also picks up .txt files in any subfolders, so decklists can be grouped further later on
@@ -78,7 +88,8 @@ public class Program
             //so instead of counting to 99, we keep everything before the first blank line and after the last one
             int FirstBlank = Array.IndexOf(Lines, "");
             int LastBlank = Array.LastIndexOf(Lines, "");
-            List<string> FileCommanders = new();
+            List<string> Cards = new();
+            List<string> Commanders = new();
             for (int Counter = 1; Counter <= Lines.Length; Counter++)
             {
                 //catalog data for the main deck (before the first blank line) and the commander(s) (after the last one)
@@ -95,16 +106,32 @@ public class Program
                     int SpaceIndex = Content.IndexOf(' ');
                     if (SpaceIndex >= 0)
                         Content = Content[(SpaceIndex + 1)..];
-                    //update entry if it is in the dictionary, or make a new entry starting at 1 if it isn't
-                    //GetValueOrDefault returns 0 for a card that isn't in the dictionary yet
-                    DataDict[Content] = DataDict.GetValueOrDefault(Content) + 1;
+                    Cards.Add(Content);
                     //lines after the last blank line are this decklist's commander(s)
                     if (LastBlank >= 0 && Counter > LastBlank + 1)
-                        FileCommanders.Add(Content);
+                        Commanders.Add(Content);
                 }
             }
+            FileCards.Add(Cards);
+            FileCommanders.Add(Commanders);
+        }
+
+        //look up every card on Scryfall so cards that share the same card id count as one card
+        //(e.g. "Shantotto's Coercion" is counted as "Diabolic Intent"); if Scryfall can't be reached the names are used as written
+        Dictionary<string, CardInfo> CardInfos = await GetCardInfo(FileCards.SelectMany(Cards => Cards));
+        string MainName(string CardName) => CardInfos.TryGetValue(CardName, out CardInfo? Info) ? Info.Name : CardName;
+
+        for (int FileIndex = 0; FileIndex < FileCards.Count; FileIndex++)
+        {
+            //Distinct() makes sure a card only counts once per decklist even if the list used two of its names
+            foreach (string CardName in FileCards[FileIndex].Select(MainName).Distinct())
+            {
+                //update entry if it is in the dictionary, or make a new entry starting at 1 if it isn't
+                //GetValueOrDefault returns 0 for a card that isn't in the dictionary yet
+                DataDict[CardName] = DataDict.GetValueOrDefault(CardName) + 1;
+            }
             //"|" joins partner names into one key, since card names never contain it
-            string CommanderKey = string.Join("|", FileCommanders);
+            string CommanderKey = string.Join("|", FileCommanders[FileIndex].Select(MainName));
             CommanderCounts[CommanderKey] = CommanderCounts.GetValueOrDefault(CommanderKey) + 1;
         }
         //sort the pairs by how often the card shows up (most common first), then by card name for ties
@@ -119,20 +146,26 @@ public class Program
         //NOTE: some folders hold a few lists that use alternate-name printings of the commanders, so the most common wins,
         //and on a tie the one whose name matches the folder name wins (e.g. "Sisay, Weatherlight Captain" in the Sisay folder)
         string[] FolderWords = NormalizeName(Path.GetFileName(CommanderFolder)).Split(' ');
-        string[] Commanders = CommanderCounts.OrderByDescending(Pair => Pair.Value)
+        string[] TopCommanders = CommanderCounts.OrderByDescending(Pair => Pair.Value)
                                              .ThenByDescending(Pair => FolderWords.Count(Word => Pair.Key.ToLower().Contains(Word)))
                                              .Select(Pair => Pair.Key.Split('|', StringSplitOptions.RemoveEmptyEntries))
                                              .FirstOrDefault() ?? [];
 
+        //card name -> image link for every card that has one
+        Dictionary<string, string> CardImages = CardInfos.Values.Where(Info => Info.ImageUrl != null)
+                                                                .DistinctBy(Info => Info.Name)
+                                                                .ToDictionary(Info => Info.Name, Info => Info.ImageUrl!);
+
         //uses the same list of files that was read above (which includes subfolders) so the percentages line up
-        return new DecklistResult(DataDict, DecklistFiles.Length, Commanders);
+        return new DecklistResult(DataDict, DecklistFiles.Length, TopCommanders, CardImages);
     }
 
-    //card images come from Scryfall (https://scryfall.com/docs/api)
+    //card names and images come from Scryfall (https://scryfall.com/docs/api)
     //Scryfall asks every app to send a User-Agent and Accept header, so they're set once on a shared HttpClient
     private static readonly HttpClient Scryfall = CreateScryfallClient();
-    //card name -> image link; card images never change, so each card is only looked up once while the site is running
-    private static readonly ConcurrentDictionary<string, string> CardImageCache = new(StringComparer.OrdinalIgnoreCase);
+    //card name as written in a decklist -> what Scryfall knows about it (null = Scryfall doesn't know the card)
+    //card details never change, so each name is only looked up once while the site is running
+    private static readonly ConcurrentDictionary<string, CardInfo?> CardInfoCache = new(StringComparer.OrdinalIgnoreCase);
 
     private static HttpClient CreateScryfallClient()
     {
@@ -142,11 +175,12 @@ public class Program
         return Client;
     }
 
-    //looks up the Scryfall image for each card name and returns card name -> image link
-    //cards that can't be found (or if Scryfall can't be reached) are left out, and the page shows their name as text instead
-    public static async Task<Dictionary<string, string>> GetCardImages(IEnumerable<string> CardNames)
+    //looks up each card name on Scryfall and returns card name as written -> Scryfall's main name and image
+    //cards that can't be found (or if Scryfall can't be reached) are left out, so the page uses the name as written instead
+    public static async Task<Dictionary<string, CardInfo>> GetCardInfo(IEnumerable<string> CardNames)
     {
-        List<string> Missing = CardNames.Distinct().Where(Name => !CardImageCache.ContainsKey(Name)).ToList();
+        List<string> Names = CardNames.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        List<string> Missing = Names.Where(Name => !CardInfoCache.ContainsKey(Name)).ToList();
 
         //Scryfall's /cards/collection endpoint takes up to 75 cards per request, so ~170 cards only needs 3 requests
         for (int Start = 0; Start < Missing.Count; Start += 75)
@@ -161,36 +195,64 @@ public class Program
                 string RequestJson = JsonSerializer.Serialize(new { identifiers = Batch.Select(Name => new { name = Name }) });
                 using HttpResponseMessage Response = await Scryfall.PostAsync("cards/collection",
                     new StringContent(RequestJson, Encoding.UTF8, "application/json"));
+                //if Scryfall says no (e.g. too many requests), stop for now; the cards are tried again on the next page load
                 if (!Response.IsSuccessStatusCode)
-                    continue;
+                    break;
 
                 using JsonDocument Json = JsonDocument.Parse(await Response.Content.ReadAsStringAsync());
+                //every name a returned card can be written as (main name, each face, alternate printed/flavor names) -> the card
+                Dictionary<string, CardInfo> Found = new(StringComparer.OrdinalIgnoreCase);
                 foreach (JsonElement Card in Json.RootElement.GetProperty("data").EnumerateArray())
                 {
-                    string? ImageUrl = GetImageUrl(Card);
-                    if (ImageUrl == null)
-                        continue;
-                    //Scryfall returns double-faced and split cards as "Front // Back", but a decklist may only list the front,
-                    //so the image is stored under the full name and under each face's name
-                    CardImageCache[Card.GetProperty("name").GetString() ?? ""] = ImageUrl;
-                    if (Card.TryGetProperty("card_faces", out JsonElement Faces))
-                        foreach (JsonElement Face in Faces.EnumerateArray())
-                            CardImageCache[Face.GetProperty("name").GetString() ?? ""] = ImageUrl;
+                    CardInfo Info = new(Card.GetProperty("name").GetString() ?? "", GetImageUrl(Card));
+                    foreach (string Alias in GetNames(Card))
+                        Found.TryAdd(Alias, Info);
                 }
-                //cards Scryfall answered for but had no image for are stored as "" so they aren't looked up again on every page load
-                //(this only happens after a successful answer, so cards missed because Scryfall was unreachable are retried)
                 foreach (string Name in Batch)
-                    CardImageCache.TryAdd(Name, "");
+                {
+                    if (Found.TryGetValue(Name, out CardInfo? Info))
+                        CardInfoCache[Name] = Info;
+                    else
+                        //some alternate-name printings aren't matched by an exact name, so try Scryfall's more forgiving search
+                        CardInfoCache[Name] = await FindCardByFuzzyName(Name);
+                }
             }
-            catch (Exception Error) when (Error is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException)
+            catch (Exception Error) when (Error is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
             {
-                //Scryfall couldn't be reached or sent something unexpected; skip this batch so the page still loads
+                //Scryfall couldn't be reached or sent something unexpected; stop trying so the page still loads quickly
+                //(nothing is cached, so these cards are tried again on the next page load)
+                break;
             }
         }
 
-        return CardNames.Distinct()
-                        .Where(Name => CardImageCache.GetValueOrDefault(Name, "") != "")
-                        .ToDictionary(Name => Name, Name => CardImageCache[Name]);
+        return Names.Where(Name => CardInfoCache.GetValueOrDefault(Name) != null)
+                    .ToDictionary(Name => Name, Name => CardInfoCache[Name]!);
+    }
+
+    //Scryfall's /cards/named?fuzzy= search, used for the few names the batch lookup didn't match
+    //returns null if Scryfall answered that it doesn't know the card
+    private static async Task<CardInfo?> FindCardByFuzzyName(string Name)
+    {
+        await Task.Delay(100);
+        using HttpResponseMessage Response = await Scryfall.GetAsync("cards/named?fuzzy=" + Uri.EscapeDataString(Name));
+        if (Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        Response.EnsureSuccessStatusCode();
+        using JsonDocument Json = JsonDocument.Parse(await Response.Content.ReadAsStringAsync());
+        return new CardInfo(Json.RootElement.GetProperty("name").GetString() ?? Name, GetImageUrl(Json.RootElement));
+    }
+
+    //every name a card can be listed under in a decklist: its main name, each face of a double-faced or split card
+    //(Scryfall writes these as "Front // Back" but a decklist may only list the front), and alternate-name printings
+    private static IEnumerable<string> GetNames(JsonElement Card)
+    {
+        List<JsonElement> Parts = [Card];
+        if (Card.TryGetProperty("card_faces", out JsonElement Faces))
+            Parts.AddRange(Faces.EnumerateArray());
+        foreach (JsonElement Part in Parts)
+            foreach (string Field in new[] { "name", "printed_name", "flavor_name" })
+                if (Part.TryGetProperty(Field, out JsonElement Value) && Value.GetString() is string Text)
+                    yield return Text;
     }
 
     //normal cards have their image on the card itself, double-faced cards have one image per face (the front face is used)

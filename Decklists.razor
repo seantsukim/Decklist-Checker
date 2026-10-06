@@ -43,7 +43,14 @@
                 <div class="card">
                     @CardPicture(DataPair.Key)
                     @* same percentage as the terminal version: decklists the card shows up in / total decklists *@
-                    <span class="percent">@((((float)DataPair.Value / Result.FileCount) * 100).ToString("F2"))%</span>
+                    @{
+                        float Percent = ((float)DataPair.Value / Result.FileCount) * 100;
+                        string Rank = GetRank(DataPair.Value, Result.FileCount);
+                    }
+                    <span class="percent">
+                        @(Percent.ToString("F2"))%
+                        <span class="rank rank-@Rank.ToLower()">@Rank</span>
+                    </span>
                 </div>
             }
         </div>
@@ -68,21 +75,41 @@
         if (Name == null)
         {
             //one thumbnail per folder in Decklists, showing that folder's most common commander(s)
-            Thumbnails = Program.GetCommanderFolders()
-                .Select(Folder => (Folder, Decks: Program.ReadDecklists(Path.Combine(Program.DecklistsDirectory, Folder))))
-                .Select(Entry => new CommanderThumbnail(Entry.Folder, Entry.Decks.Commanders, Entry.Decks.FileCount))
-                .ToList();
-            CardImages = await Program.GetCardImages(Thumbnails.SelectMany(Thumbnail => Thumbnail.Commanders));
+            //NOTE: this reads (and looks up on Scryfall) every card in every folder so alternate-name commanders are merged too;
+            //the first homepage load takes a few seconds, after that the Scryfall answers are cached
+            Thumbnails = new();
+            foreach (string Folder in Program.GetCommanderFolders())
+            {
+                DecklistResult Decks = await Program.ReadDecklists(Path.Combine(Program.DecklistsDirectory, Folder));
+                Thumbnails.Add(new CommanderThumbnail(Folder, Decks.Commanders, Decks.FileCount));
+                foreach (string Commander in Decks.Commanders)
+                    if (Decks.CardImages.TryGetValue(Commander, out string? ImageUrl))
+                        CardImages[Commander] = ImageUrl;
+            }
         }
         else
         {
             //the same order-independent search as before, so "/commander/tymna kraum" also finds "Kraum Tymna"
             string? CommanderFolder = Program.FindCommanderFolder(Name);
-            Result = CommanderFolder == null ? null : Program.ReadDecklists(CommanderFolder);
+            Result = CommanderFolder == null ? null : await Program.ReadDecklists(CommanderFolder);
             FolderName = Path.GetFileName(CommanderFolder) ?? Name;
-            if (Result != null)
-                CardImages = await Program.GetCardImages(Result.DataDict.Keys);
+            CardImages = Result?.CardImages ?? new();
         }
+    }
+
+    //letter rank for how often a card shows up:
+    //100% = S, 80-99% = A, 60-79% = B, 40-59% = C, 20-39% = D, 0-19% = F
+    //S compares the counts directly so it isn't affected by float rounding; the rest compare the percentage,
+    //so e.g. 79.5% is still a B (it hasn't reached 80%)
+    private static string GetRank(int Count, int FileCount)
+    {
+        if (Count >= FileCount) return "S";
+        float Percent = (float)Count / FileCount * 100;
+        if (Percent >= 80) return "A";
+        if (Percent >= 60) return "B";
+        if (Percent >= 40) return "C";
+        if (Percent >= 20) return "D";
+        return "F";
     }
 
     //shows the Scryfall image for a card, or its name in a card-shaped box if no image was found
