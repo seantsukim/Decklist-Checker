@@ -427,3 +427,7 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Scryfall answers saved by the website (rebuilt automatically)
+scryfall-cache.json
+scryfall-cache.json.tmp

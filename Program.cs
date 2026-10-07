@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 
@@ -167,9 +168,19 @@ public class Program
     //card names and images come from Scryfall (https://scryfall.com/docs/api)
     //Scryfall asks every app to send a User-Agent and Accept header, so they're set once on a shared HttpClient
     private static readonly HttpClient Scryfall = CreateScryfallClient();
+    //Scryfall's answers are also saved to this file (next to the Decklists folder) so a restart doesn't have to look
+    //every card up again. it's created automatically and ignored by git; delete it to make the site re-check every card
+    private static readonly string CacheFile = Path.GetFullPath(Path.Combine(DecklistsDirectory, "..", "scryfall-cache.json"));
     //card name as written in a decklist -> what Scryfall knows about it (null = Scryfall doesn't know the card)
-    //card details never change, so each name is only looked up once while the site is running
-    private static readonly ConcurrentDictionary<string, CardInfo?> CardInfoCache = new(StringComparer.OrdinalIgnoreCase);
+    //card details never change, so each name is only looked up once and then remembered (in memory and in CacheFile)
+    private static readonly ConcurrentDictionary<string, CardInfo?> CardInfoCache = LoadCache();
+    private static readonly Lock CacheFileLock = new();
+
+    //every request to Scryfall goes through this gate one at a time, at least ScryfallSpacing apart, so the site stays
+    //under Scryfall's rate limit (about 10 requests a second) no matter how many folders, tabs or visitors are loading
+    private static readonly SemaphoreSlim ScryfallGate = new(1, 1);
+    private static readonly TimeSpan ScryfallSpacing = TimeSpan.FromMilliseconds(100);
+    private static DateTime LastScryfallRequest = DateTime.MinValue;
 
     private static HttpClient CreateScryfallClient()
     {
@@ -179,27 +190,60 @@ public class Program
         return Client;
     }
 
+    //sends one request to Scryfall through the shared gate
+    //if Scryfall answers "too many requests" (429) or is briefly unavailable (5xx), it waits and tries again, up to 3 tries
+    //CreateRequest builds a fresh request each try, because a request can't be sent twice
+    private static async Task<HttpResponseMessage> SendToScryfall(Func<HttpRequestMessage> CreateRequest)
+    {
+        for (int Attempt = 1; ; Attempt++)
+        {
+            HttpResponseMessage Response;
+            await ScryfallGate.WaitAsync();
+            try
+            {
+                TimeSpan Wait = LastScryfallRequest + ScryfallSpacing - DateTime.UtcNow;
+                if (Wait > TimeSpan.Zero)
+                    await Task.Delay(Wait);
+                Response = await Scryfall.SendAsync(CreateRequest());
+            }
+            finally
+            {
+                LastScryfallRequest = DateTime.UtcNow;
+                ScryfallGate.Release();
+            }
+
+            bool ShouldRetry = Response.StatusCode == HttpStatusCode.TooManyRequests || (int)Response.StatusCode >= 500;
+            if (!ShouldRetry || Attempt == 3)
+                return Response;
+
+            //Scryfall may say how long to wait (Retry-After); otherwise wait a second, and never more than 10 seconds
+            TimeSpan RetryAfter = Response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(1);
+            Response.Dispose();
+            await Task.Delay(RetryAfter < TimeSpan.FromSeconds(10) ? RetryAfter : TimeSpan.FromSeconds(10));
+        }
+    }
+
     //looks up each card name on Scryfall and returns card name as written -> Scryfall's main name and image
     //cards that can't be found (or if Scryfall can't be reached) are left out, so the page uses the name as written instead
     public static async Task<Dictionary<string, CardInfo>> GetCardInfo(IEnumerable<string> CardNames)
     {
         List<string> Names = CardNames.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         List<string> Missing = Names.Where(Name => !CardInfoCache.ContainsKey(Name)).ToList();
+        //names the batch lookup didn't match, to try with Scryfall's more forgiving search afterwards
+        List<string> NotMatched = new();
 
         //Scryfall's /cards/collection endpoint takes up to 75 cards per request, so ~170 cards only needs 3 requests
         for (int Start = 0; Start < Missing.Count; Start += 75)
         {
-            //Scryfall asks for a short pause between requests
-            if (Start > 0)
-                await Task.Delay(100);
-
             List<string> Batch = Missing.Skip(Start).Take(75).ToList();
             try
             {
                 string RequestJson = JsonSerializer.Serialize(new { identifiers = Batch.Select(Name => new { name = Name }) });
-                using HttpResponseMessage Response = await Scryfall.PostAsync("cards/collection",
-                    new StringContent(RequestJson, Encoding.UTF8, "application/json"));
-                //if Scryfall says no (e.g. too many requests), stop for now; the cards are tried again on the next page load
+                using HttpResponseMessage Response = await SendToScryfall(() => new HttpRequestMessage(HttpMethod.Post, "cards/collection")
+                {
+                    Content = new StringContent(RequestJson, Encoding.UTF8, "application/json")
+                });
+                //Scryfall still said no after retrying, so stop for now; these cards are tried again on the next page load
                 if (!Response.IsSuccessStatusCode)
                     break;
 
@@ -212,13 +256,13 @@ public class Program
                     foreach (string Alias in GetNames(Card))
                         Found.TryAdd(Alias, Info);
                 }
+                //save every matched card right away, so a problem later on can't lose them
                 foreach (string Name in Batch)
                 {
                     if (Found.TryGetValue(Name, out CardInfo? Info))
                         CardInfoCache[Name] = Info;
                     else
-                        //some alternate-name printings aren't matched by an exact name, so try Scryfall's more forgiving search
-                        CardInfoCache[Name] = await FindCardByFuzzyName(Name);
+                        NotMatched.Add(Name);
                 }
             }
             catch (Exception Error) when (Error is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
@@ -229,6 +273,23 @@ public class Program
             }
         }
 
+        //some alternate-name printings aren't matched by an exact name, so try Scryfall's more forgiving search one card at a time
+        //a failure only affects that one card; but if Scryfall stops answering, the rest are left for the next page load
+        foreach (string Name in NotMatched)
+        {
+            try
+            {
+                CardInfoCache[Name] = await FindCardByFuzzyName(Name);
+            }
+            catch (Exception Error) when (Error is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
+            {
+                break;
+            }
+        }
+
+        if (Missing.Any(CardInfoCache.ContainsKey))
+            SaveCache();
+
         return Names.Where(Name => CardInfoCache.GetValueOrDefault(Name) != null)
                     .ToDictionary(Name => Name, Name => CardInfoCache[Name]!);
     }
@@ -237,13 +298,48 @@ public class Program
     //returns null if Scryfall answered that it doesn't know the card
     private static async Task<CardInfo?> FindCardByFuzzyName(string Name)
     {
-        await Task.Delay(100);
-        using HttpResponseMessage Response = await Scryfall.GetAsync("cards/named?fuzzy=" + Uri.EscapeDataString(Name));
-        if (Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        using HttpResponseMessage Response = await SendToScryfall(() =>
+            new HttpRequestMessage(HttpMethod.Get, "cards/named?fuzzy=" + Uri.EscapeDataString(Name)));
+        if (Response.StatusCode == HttpStatusCode.NotFound)
             return null;
         Response.EnsureSuccessStatusCode();
         using JsonDocument Json = JsonDocument.Parse(await Response.Content.ReadAsStringAsync());
         return new CardInfo(Json.RootElement.GetProperty("name").GetString() ?? Name, GetImageUrl(Json.RootElement));
+    }
+
+    //reads the saved Scryfall answers when the site starts; starts empty if the file is missing or unreadable
+    private static ConcurrentDictionary<string, CardInfo?> LoadCache()
+    {
+        try
+        {
+            Dictionary<string, CardInfo?>? Saved = JsonSerializer.Deserialize<Dictionary<string, CardInfo?>>(File.ReadAllText(CacheFile));
+            if (Saved != null)
+                return new ConcurrentDictionary<string, CardInfo?>(Saved, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception Error) when (Error is IOException or UnauthorizedAccessException or JsonException)
+        {
+            //no saved answers yet (or the file is broken), so start fresh; it will be rewritten after the next lookup
+        }
+        return new ConcurrentDictionary<string, CardInfo?>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    //writes every Scryfall answer to CacheFile; it's written to a temporary file first and then swapped in,
+    //so the site stopping halfway through can't leave a half-written file behind
+    private static void SaveCache()
+    {
+        lock (CacheFileLock)
+        {
+            try
+            {
+                string TempFile = CacheFile + ".tmp";
+                File.WriteAllText(TempFile, JsonSerializer.Serialize(CardInfoCache.ToDictionary(Pair => Pair.Key, Pair => Pair.Value)));
+                File.Move(TempFile, CacheFile, overwrite: true);
+            }
+            catch (Exception Error) when (Error is IOException or UnauthorizedAccessException)
+            {
+                //couldn't save (e.g. the folder is read-only); the answers are still remembered while the site is running
+            }
+        }
     }
 
     //the Scryfall fields that hold a name a card can be listed under
